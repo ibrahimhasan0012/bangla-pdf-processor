@@ -683,6 +683,12 @@ class BanglaPDFProcessor:
         section.top_margin = Inches(1.0)
         section.bottom_margin = Inches(1.0)
 
+        def sanitize_xml(text):
+            if not text:
+                return ""
+            # Strip invalid XML control characters (ASCII 0-8, 11-12, 14-31)
+            return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(text))
+
         def set_font_run(run, name="Kalpurush", size_pt=11, bold=False, italic=False, color_rgb=None, highlight=False):
             run.font.name = name
             run.font.size = Pt(size_pt)
@@ -702,23 +708,27 @@ class BanglaPDFProcessor:
             rFonts.set(qn('w:hAnsi'), name)
 
         def add_runs_with_hl(paragraph, text, char_hl_slice, size_pt=11, bold=False, italic=False, color_rgb=None):
-            if not text:
+            clean_text = sanitize_xml(text)
+            if not clean_text:
                 return
             runs_data = []
-            curr_txt = [text[0]]
+            curr_txt = [clean_text[0]]
             curr_hl = char_hl_slice[0] if char_hl_slice else False
-            for i in range(1, len(text)):
+            for i in range(1, len(clean_text)):
                 hl = char_hl_slice[i] if i < len(char_hl_slice) else curr_hl
                 if hl == curr_hl:
-                    curr_txt.append(text[i])
+                    curr_txt.append(clean_text[i])
                 else:
                     runs_data.append((''.join(curr_txt), curr_hl))
-                    curr_txt = [text[i]]
+                    curr_txt = [clean_text[i]]
                     curr_hl = hl
             runs_data.append((''.join(curr_txt), curr_hl))
 
             for chunk_text, hl in runs_data:
-                r = paragraph.add_run(chunk_text)
+                chunk_clean = sanitize_xml(chunk_text)
+                if not chunk_clean:
+                    continue
+                r = paragraph.add_run(chunk_clean)
                 set_font_run(r, size_pt=size_pt, bold=bold, italic=italic, color_rgb=color_rgb, highlight=hl)
 
 
@@ -739,11 +749,13 @@ class BanglaPDFProcessor:
                     for key, val in edge_data.items():
                         element.set(qn(f'w:{key}'), str(val))
 
+        is_packaged_food = "packaged_food" in os.path.basename(self.input_pdf_path).lower()
+
         for p_idx, (page_num, lines_data) in enumerate(all_pages_data):
             if page_num > 1:
                 doc.add_page_break()
 
-            if page_num == 1:
+            if is_packaged_food and page_num == 1:
                 # Registered Number
                 p_reg = doc.add_paragraph()
                 p_reg.paragraph_format.space_before = Pt(0)
@@ -909,50 +921,193 @@ class BanglaPDFProcessor:
                 r = p_f2.add_run("মূল্য : টাকা ১৬.০০")
                 set_font_run(r, size_pt=11, bold=False)
 
-            else:
-                # Running Header
-                header_table = doc.add_table(rows=1, cols=2)
-                header_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-                header_table.autofit = False
-                header_table.rows[0].cells[0].width = Inches(2.5)
-                header_table.rows[0].cells[1].width = Inches(2.5)
-
-                bn_digits = str(4500 + page_num).translate(str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯"))
-                c_left = header_table.cell(0, 0)
-                c_right = header_table.cell(0, 1)
-
-                p_hl = c_left.paragraphs[0]
-                p_hr = c_right.paragraphs[0]
-
-                if page_num % 2 == 0:
-                    p_hl.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                    r = p_hl.add_run(bn_digits)
-                    set_font_run(r, size_pt=11, bold=False)
-
-                    p_hr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                    r = p_hr.add_run("বাংলাদেশ গেজেট, অতিরিক্ত, মে ৯, ২০১৭")
-                    set_font_run(r, size_pt=11, bold=False)
-                else:
-                    p_hl.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                    r = p_hl.add_run("বাংলাদেশ গেজেট, অতিরিক্ত, মে ৯, ২০১৭")
-                    set_font_run(r, size_pt=11, bold=False)
-
-                    p_hr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                    r = p_hr.add_run(bn_digits)
-                    set_font_run(r, size_pt=11, bold=False)
-
-                p_hdr_rule = doc.add_paragraph()
-                p_hdr_rule.paragraph_format.space_before = Pt(0)
-                p_hdr_rule.paragraph_format.space_after = Pt(8)
-                pBdr_hdr = parse_xml(f'<w:pBdr {nsdecls("w")}><w:bottom w:val="single" w:sz="6" w:space="1" w:color="000000"/></w:pBdr>')
-                p_hdr_rule._p.get_or_add_pPr().append(pBdr_hdr)
-
-                # Filter running header lines from raw text
-                page_lines = []
+            elif page_num == 1:
+                # Generalized Page 1 Masthead for any Gazette / Regulation
+                masthead_lines = []
+                body_lines = []
+                in_masthead = True
                 for l_item in lines_data:
-                    t = l_item["text"] if isinstance(l_item, dict) else l_item
-                    if not t.startswith("৪৫০") and not t.startswith("বাংলাদেশ গেজেট"):
-                        page_lines.append(l_item)
+                    t = l_item["text"].strip() if isinstance(l_item, dict) else l_item.strip()
+                    if not t: continue
+                    if in_masthead:
+                        if any(k in t for k in ["রেজিস্টার্ড", "বাংলাদেশ", "গেজেট", "অতিরিক্ত", "কর্তৃপক্ষ", "প্রকাশিত",
+                                               "সোমবার", "মঙ্গলবার", "বুধবার", "বৃহস্পতিবার", "শুক্রবার", "শনিবার", "রবিবার",
+                                               "বৈশাখ", "জ্যৈষ্ঠ", "আষাঢ়", "শ্রাবণ", "ভাদ্র", "আশ্বিন", "কার্তিক", "অগ্রহায়ণ",
+                                               "পৌষ", "মাঘ", "ফাল্গুন", "চৈত্র", "জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল",
+                                               "মে", "জুন", "জুলাই", "আগস্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর",
+                                               "ডি এ-১", "ডি এ - ১", "ডি এ- ১"]) and not any(k in t for k in ["গণপ্রজাতন্ত্রী", "মন্ত্রণালয়", "আইন,", "অধ্যায়"]):
+                            masthead_lines.append(l_item)
+                        else:
+                            in_masthead = False
+                            body_lines.append(l_item)
+                    else:
+                        body_lines.append(l_item)
+
+                reg_line = "রেজিস্টার্ড নং ডি এ-১"
+                for m in masthead_lines:
+                    mt = m["text"].strip() if isinstance(m, dict) else m.strip()
+                    if "রেজিস্টার্ড" in mt:
+                        reg_line = mt
+                        break
+
+                p_reg = doc.add_paragraph()
+                p_reg.paragraph_format.space_before = Pt(0)
+                p_reg.paragraph_format.space_after = Pt(8)
+                r = p_reg.add_run(sanitize_xml(reg_line))
+                set_font_run(r, size_pt=11, bold=True)
+
+                tbl = doc.add_table(rows=1, cols=3)
+                tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+                tbl.autofit = False
+                col_widths = [Inches(1.8), Inches(1.4), Inches(1.8)]
+                for row in tbl.rows:
+                    for idx, width in enumerate(col_widths):
+                        row.cells[idx].width = width
+
+                c0 = tbl.cell(0, 0)
+                c0.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                p0 = c0.paragraphs[0]
+                p0.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                r0 = p0.add_run("বাংলাদেশ ")
+                set_font_run(r0, size_pt=34, bold=True)
+
+                c1 = tbl.cell(0, 1)
+                c1.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                p1 = c1.paragraphs[0]
+                p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                if crest_img_path and os.path.exists(crest_img_path):
+                    try:
+                        r1 = p1.add_run()
+                        r1.add_picture(crest_img_path, width=Inches(1.15))
+                    except Exception:
+                        pass
+
+                c2 = tbl.cell(0, 2)
+                c2.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                p2 = c2.paragraphs[0]
+                p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                r2 = p2.add_run(" গেজেট")
+                set_font_run(r2, size_pt=34, bold=True)
+
+                p_bar1 = doc.add_paragraph()
+                p_bar1.paragraph_format.space_before = Pt(6)
+                p_bar1.paragraph_format.space_after = Pt(6)
+                pBdr1 = parse_xml(f'<w:pBdr {nsdecls("w")}><w:bottom w:val="double" w:sz="12" w:space="1" w:color="000000"/></w:pBdr>')
+                p_bar1._p.get_or_add_pPr().append(pBdr1)
+
+                for m in masthead_lines:
+                    mt = m["text"].strip() if isinstance(m, dict) else m.strip()
+                    if "রেজিস্টার্ড" in mt or mt in ["বাংলাদেশ", "গেজেট"] or not mt:
+                        continue
+                    p_sub = doc.add_paragraph()
+                    p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p_sub.paragraph_format.space_before = Pt(2)
+                    p_sub.paragraph_format.space_after = Pt(2)
+                    r = p_sub.add_run(sanitize_xml(mt))
+                    set_font_run(r, size_pt=12, bold=True)
+
+                p_bar2 = doc.add_paragraph()
+                p_bar2.paragraph_format.space_before = Pt(0)
+                p_bar2.paragraph_format.space_after = Pt(8)
+                pBdr2 = parse_xml(f'<w:pBdr {nsdecls("w")}><w:bottom w:val="double" w:sz="12" w:space="1" w:color="000000"/></w:pBdr>')
+                p_bar2._p.get_or_add_pPr().append(pBdr2)
+
+                page_lines = body_lines
+
+            else:
+                if is_packaged_food:
+                    # Running Header (Packaged Food)
+                    header_table = doc.add_table(rows=1, cols=2)
+                    header_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                    header_table.autofit = False
+                    header_table.rows[0].cells[0].width = Inches(2.5)
+                    header_table.rows[0].cells[1].width = Inches(2.5)
+
+                    bn_digits = str(4500 + page_num).translate(str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯"))
+                    c_left = header_table.cell(0, 0)
+                    c_right = header_table.cell(0, 1)
+
+                    p_hl = c_left.paragraphs[0]
+                    p_hr = c_right.paragraphs[0]
+
+                    if page_num % 2 == 0:
+                        p_hl.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                        r = p_hl.add_run(bn_digits)
+                        set_font_run(r, size_pt=11, bold=False)
+
+                        p_hr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        r = p_hr.add_run("বাংলাদেশ গেজেট, অতিরিক্ত, মে ৯, ২০১৭")
+                        set_font_run(r, size_pt=11, bold=False)
+                    else:
+                        p_hl.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                        r = p_hl.add_run("বাংলাদেশ গেজেট, অতিরিক্ত, মে ৯, ২০১৭")
+                        set_font_run(r, size_pt=11, bold=False)
+
+                        p_hr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        r = p_hr.add_run(bn_digits)
+                        set_font_run(r, size_pt=11, bold=False)
+
+                    p_hdr_rule = doc.add_paragraph()
+                    p_hdr_rule.paragraph_format.space_before = Pt(0)
+                    p_hdr_rule.paragraph_format.space_after = Pt(8)
+                    pBdr_hdr = parse_xml(f'<w:pBdr {nsdecls("w")}><w:bottom w:val="single" w:sz="6" w:space="1" w:color="000000"/></w:pBdr>')
+                    p_hdr_rule._p.get_or_add_pPr().append(pBdr_hdr)
+
+                    page_lines = []
+                    for l_item in lines_data:
+                        t = l_item["text"] if isinstance(l_item, dict) else l_item
+                        if not t.startswith("৪৫০") and not t.startswith("বাংলাদেশ গেজেট"):
+                            page_lines.append(l_item)
+                else:
+                    # Dynamic Running Header Detection for any document
+                    header_text = ""
+                    page_digits = ""
+                    body_start_idx = 0
+
+                    for idx, l_item in enumerate(lines_data[:4]):
+                        t = l_item["text"].strip() if isinstance(l_item, dict) else l_item.strip()
+                        if "বাংলাদেশ গেজেট" in t or re.match(r'^[০-৯0-9]{2,6}$', t) or re.match(r'^[০-৯0-9]{2,6}\s+বাংলাদেশ', t) or re.search(r'বাংলাদেশ.*\s+[০-৯0-9]{2,6}$', t):
+                            if "বাংলাদেশ" in t:
+                                header_text = t
+                            if re.search(r'[০-৯0-9]{2,6}', t):
+                                page_digits = re.search(r'[০-৯0-9]{2,6}', t).group(0)
+                            body_start_idx = idx + 1
+
+                    if header_text or page_digits:
+                        clean_hdr_title = re.sub(r'[০-৯0-9]{2,6}', '', header_text).strip() or "বাংলাদেশ গেজেট"
+                        header_table = doc.add_table(rows=1, cols=2)
+                        header_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                        header_table.autofit = False
+                        header_table.rows[0].cells[0].width = Inches(2.5)
+                        header_table.rows[0].cells[1].width = Inches(2.5)
+
+                        c_left = header_table.cell(0, 0)
+                        c_right = header_table.cell(0, 1)
+                        p_hl = c_left.paragraphs[0]
+                        p_hr = c_right.paragraphs[0]
+
+                        if page_num % 2 == 0:
+                            p_hl.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                            r = p_hl.add_run(sanitize_xml(page_digits))
+                            set_font_run(r, size_pt=10.5, bold=False)
+                            p_hr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                            r = p_hr.add_run(sanitize_xml(clean_hdr_title))
+                            set_font_run(r, size_pt=10.5, bold=False)
+                        else:
+                            p_hl.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                            r = p_hl.add_run(sanitize_xml(clean_hdr_title))
+                            set_font_run(r, size_pt=10.5, bold=False)
+                            p_hr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                            r = p_hr.add_run(sanitize_xml(page_digits))
+                            set_font_run(r, size_pt=10.5, bold=False)
+
+                        p_hdr_rule = doc.add_paragraph()
+                        p_hdr_rule.paragraph_format.space_before = Pt(0)
+                        p_hdr_rule.paragraph_format.space_after = Pt(8)
+                        pBdr_hdr = parse_xml(f'<w:pBdr {nsdecls("w")}><w:bottom w:val="single" w:sz="6" w:space="1" w:color="000000"/></w:pBdr>')
+                        p_hdr_rule._p.get_or_add_pPr().append(pBdr_hdr)
+
+                    page_lines = lines_data[body_start_idx:]
 
                 skip_p9_table = False
                 skip_p10_tbl1 = False
@@ -973,8 +1128,8 @@ class BanglaPDFProcessor:
                         is_hl = l_item.get("is_highlighted", False) if isinstance(l_item, dict) else False
                         char_hl = [is_hl] * len(text_line)
 
-                    # Page 9 Table: Non-Vegetarian brown symbol
-                    if page_num == 9:
+                    # Page 9 Table: Non-Vegetarian brown symbol (Packaged Food custom)
+                    if is_packaged_food and page_num == 9:
                         if text_line.strip() == "টেবিল":
                             p_tbl_title = doc.add_paragraph()
                             p_tbl_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1026,8 +1181,8 @@ class BanglaPDFProcessor:
                         if skip_p9_table:
                             continue
 
-                    # Page 10 Tables: Vegetarian green symbol & Dimensions table
-                    if page_num == 10:
+                    # Page 10 Tables: Vegetarian green symbol & Dimensions table (Packaged Food custom)
+                    if is_packaged_food and page_num == 10:
                         if text_line.strip() == "টেবিল" and p10_tbl_idx == 0:
                             p10_tbl_idx = 1
                             p_tbl_title = doc.add_paragraph()
@@ -1141,65 +1296,39 @@ class BanglaPDFProcessor:
                         if text_line.strip() == "•":
                             continue
 
-                    # Page 15 Signature & Publisher block
-                    if page_num == 15 and "বাংলাদেশ নিরাপদ খাদ্য কর্তৃপক্ষের আদেশক্রমে" in text_line:
-                        p_sig1 = doc.add_paragraph()
-                        p_sig1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                        p_sig1.paragraph_format.space_before = Pt(16)
-                        p_sig1.paragraph_format.space_after = Pt(4)
-                        r = p_sig1.add_run("বাংলাদেশ নিরাপদ খাদ্য কর্তৃপক্ষের আদেশক্রমে")
-                        set_font_run(r, size_pt=11.5, bold=False)
-                        continue
-
-                    if page_num == 15 and "মোহাম্মদ রাহফুজুল হক" in text_line:
-                        p_sig2 = doc.add_paragraph()
-                        p_sig2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                        p_sig2.paragraph_format.space_before = Pt(4)
-                        p_sig2.paragraph_format.space_after = Pt(2)
-                        r = p_sig2.add_run("মোহাম্মদ রাহফুজুল হক")
-                        set_font_run(r, size_pt=11.5, bold=True)
-                        continue
-
-                    if page_num == 15 and "চেয়ারম্যান।" in text_line:
-                        p_sig3 = doc.add_paragraph()
-                        p_sig3.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                        p_sig3.paragraph_format.space_before = Pt(2)
-                        p_sig3.paragraph_format.space_after = Pt(28)
-                        r = p_sig3.add_run("চেয়ারম্যান।")
-                        set_font_run(r, size_pt=11.5, bold=True)
-                        continue
-
-                    if page_num == 15 and "মোঃ আব্দুল মালেক" in text_line:
+                    # Publisher & Colophon blocks (Universal)
+                    if any(k in text_line for k in ["উপপরিচালক, বাংলাদেশ সরকারী মুদ্রণালয়", "বাংলাদেশ সরকারী মুদ্রণালয়, তেজগাঁও", "কর্তৃক মুদ্রিত"]):
                         p_pub1 = doc.add_paragraph()
                         p_pub1.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                        p_pub1.paragraph_format.space_before = Pt(28)
+                        p_pub1.paragraph_format.space_before = Pt(24)
                         p_pub1.paragraph_format.space_after = Pt(2)
                         pBdr_pub = parse_xml(f'<w:pBdr {nsdecls("w")}><w:top w:val="single" w:sz="6" w:space="1" w:color="000000"/></w:pBdr>')
                         p_pub1._p.get_or_add_pPr().append(pBdr_pub)
-                        r = p_pub1.add_run("মোঃ আব্দুল মালেক, উপপরিচালক, বাংলাদেশ সরকারী মুদ্রণালয়, তেজগাঁও, ঢাকা কর্তৃক মুদ্রিত।")
+                        r = p_pub1.add_run(sanitize_xml(text_line))
                         set_font_run(r, size_pt=10, bold=False)
                         continue
 
-                    if page_num == 15 and "মোঃ আলমগীর হোসেন" in text_line:
+                    if any(k in text_line for k in ["বাংলাদেশ ফরম ও প্রকাশনা অফিস", "bgpress.gov.bd", "website: www.bgpress.gov.bd"]):
                         p_pub2 = doc.add_paragraph()
                         p_pub2.alignment = WD_ALIGN_PARAGRAPH.CENTER
                         p_pub2.paragraph_format.space_before = Pt(2)
                         p_pub2.paragraph_format.space_after = Pt(2)
-                        r = p_pub2.add_run("মোঃ আলমগীর হোসেন, উপপরিচালক, বাংলাদেশ ফরম ও প্রকাশনা অফিস,")
+                        r = p_pub2.add_run(sanitize_xml(text_line))
                         set_font_run(r, size_pt=10, bold=False)
                         continue
 
-                    if page_num == 15 and "website: www.bgpress.gov.bd" in text_line:
-                        p_pub3 = doc.add_paragraph()
-                        p_pub3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        p_pub3.paragraph_format.space_before = Pt(2)
-                        p_pub3.paragraph_format.space_after = Pt(0)
-                        r = p_pub3.add_run(text_line)
-                        set_font_run(r, size_pt=10, bold=False)
+                    # Official Signatures (Universal)
+                    if any(k in text_line for k in ["বাংলাদেশ নিরাপদ খাদ্য কর্তৃপক্ষের আদেশক্রমে", "আদেশক্রমে", "চেয়ারম্যান।", "চেয়ারম্যান", "সচিব", "যুগ্মসচিব", "উপসচিব"]) and len(text_line) < 60:
+                        p_sig = doc.add_paragraph()
+                        p_sig.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        p_sig.paragraph_format.space_before = Pt(6)
+                        p_sig.paragraph_format.space_after = Pt(2)
+                        add_runs_with_hl(p_sig, text_line, char_hl, size_pt=11.5, bold=True)
                         continue
 
-                    # Chapter headings
-                    if re.match(r'^(দ্বিতীয়|তৃতীয়|চতুর্থ|পঞ্চম)\s+অধ্যায়', text_line) or \
+                    # Chapter headings (Universal)
+                    if re.match(r'^(প্রথম|দ্বিতীয়|তৃতীয়|চতুর্থ|পঞ্চম|ষষ্ঠ|সপ্তম|অষ্টম|নবম|দশম)\s+অধ্যায়', text_line) or \
+                       text_line.startswith("অধ্যায়") or \
                        text_line in ["লেবেলিং", "বিভ্রান্তিকর তথ্য প্রচার", "বিবিধ", 
                                      "খাদ্যপণ্যের নাম, পরিমাণ, একক খাদ্যোপকরণ, পুষ্টিগত তথ্য ও ব্যবহারের তারিখ"]:
                         p_hd = doc.add_paragraph()
@@ -1207,6 +1336,15 @@ class BanglaPDFProcessor:
                         p_hd.paragraph_format.space_before = Pt(10)
                         p_hd.paragraph_format.space_after = Pt(4)
                         add_runs_with_hl(p_hd, text_line, char_hl, size_pt=11.5, bold=True)
+                        continue
+
+                    # Ministry / Authority Centered Headings
+                    if text_line in ["গণপ্রজাতন্ত্রী বাংলাদেশ সরকার", "প্রজ্ঞাপন", "বাংলাদেশ নিরাপদ খাদ্য কর্তৃপক্ষ", "বিজ্ঞাপন"]:
+                        p_cen = doc.add_paragraph()
+                        p_cen.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        p_cen.paragraph_format.space_before = Pt(4)
+                        p_cen.paragraph_format.space_after = Pt(2)
+                        add_runs_with_hl(p_cen, text_line, char_hl, size_pt=11.5, bold=True)
                         continue
 
                     # Section Titles (e.g. ৩। অন্যান্য আইনের অতিরিক্ততা।—)
@@ -1229,8 +1367,24 @@ class BanglaPDFProcessor:
                         add_runs_with_hl(p_sec, body_part, body_hl, size_pt=11, bold=False)
                         continue
 
+                    # Standalone Section Numbers (e.g. ১। ...)
+                    sec_start_match = re.match(r'^([০-৯]+।)\s*(.*)$', text_line)
+                    if sec_start_match:
+                        p_sec = doc.add_paragraph()
+                        p_sec.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                        p_sec.paragraph_format.space_before = Pt(5)
+                        p_sec.paragraph_format.space_after = Pt(3)
+                        p_sec.paragraph_format.line_spacing = 1.15
+                        lbl = sec_start_match.group(1) + " "
+                        body_part = sec_start_match.group(2)
+                        len_lbl = len(lbl)
+                        body_hl = char_hl[len_lbl:] if len(char_hl) >= len_lbl else [False]*len(body_part)
+                        add_runs_with_hl(p_sec, lbl, char_hl[:len_lbl], size_pt=11, bold=True)
+                        add_runs_with_hl(p_sec, body_part, body_hl, size_pt=11, bold=False)
+                        continue
+
                     # Clauses (ক), (খ), (১), (২), (অ), (আ)
-                    cl_match = re.match(r'^(\([ক-হ০-৯অ-ঔ]+\))\s*(.*)$', text_line)
+                    cl_match = re.match(r'^(\([ক-হ০-৯অ-ঔa-zA-Z]+\))\s*(.*)$', text_line)
                     if cl_match:
                         p_cl = doc.add_paragraph()
                         p_cl.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
