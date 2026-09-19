@@ -12,12 +12,12 @@ This document defines the universal skill specification for processing, converti
 Most official government gazettes, circulars, legal acts, and institutional documents in Bangladesh are compiled using legacy ANSI fonts (primarily **SutonnyMJ** and the **Bijoy keyboard layout**) rather than standard Unicode. When users attempt to copy text or extract it with standard PDF libraries, the result is unreadable mojibake (e.g. `†iwR÷vW© bs wW G-1`).
 
 This skill provides the end-to-end procedure for:
-1. **Intelligent PDF Classification**: Auto-detecting Born-Digital Bijoy vs. Born-Digital Unicode vs. Scanned Paper PDFs.
+1. **Intelligent PDF & Per-Page Classification**: Auto-detecting Born-Digital Bijoy vs. Born-Digital Unicode vs. Scanned/Obfuscated-Font PDFs (identifying subset fonts with truncated CMaps mapping to Private Use Area PUA glyphs).
 2. **Deterministic Glyph Decoding**: Direct, mathematical conversion from SutonnyMJ glyphs to standard Unicode Bengali (100% accuracy, zero OCR hallucinations or typos on conjuncts).
 3. **Complex Script Reordering**: Correct handling of vowel signs (Pre-kars `ি`, `ে`, `ৈ`; composite `ো`, `ৌ`), consonant conjuncts (যুক্তাক্ষর), folas (য-ফলা, র-ফলা, ব-ফলা, ম-ফলা, ল-ফলা, ন-ফলা), and Reph (`র্`).
 4. **Searchable Sandwich PDF Generation**: Creating a dual-layer PDF with high-resolution visual fidelity (300 DPI) and an invisible Unicode Bengali text layer (`render_mode=3`) supporting full selection, copy-paste (`Ctrl+C`/`Ctrl+V`), and search (`Ctrl+F`).
-5. **Identical Word (.docx) Generation**: Mirroring the exact layout of official documents (headers, national emblems, running page numbers, borders, official tables) while preserving all PDF highlight annotations in standard yellow formatting.
-6. **Fallback OCR**: Seamless fallback to deep-learning OCR (EasyOCR Bengali models) when processing scanned physical papers.
+5. **Identical Word (.docx) Generation**: Mirroring the exact layout of official documents (headers, national emblems, running page numbers, borders, official vector tables) while preserving all PDF highlight annotations in standard yellow formatting.
+6. **Fallback Bilingual OCR**: Seamless fallback to deep-learning OCR (EasyOCR Bengali & English models) when processing scanned physical papers or documents with obfuscated font CMaps.
 
 ---
 

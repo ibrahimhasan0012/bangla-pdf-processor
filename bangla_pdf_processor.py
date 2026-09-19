@@ -537,34 +537,47 @@ class BanglaPDFProcessor:
         self.font_path = find_bengali_font()
         self.easyocr_reader = None
 
-    def inspect_pdf(self):
-        """Classify PDF pages as BORN_DIGITAL_BIJOY, BORN_DIGITAL_UNICODE, or SCANNED."""
-        bijoy_count = 0
-        unicode_count = 0
-        scanned_count = 0
+    def classify_page(self, page):
+        """Classify a single page as BORN_DIGITAL_BIJOY, BORN_DIGITAL_UNICODE, or SCANNED."""
+        text = page.get_text().strip()
+        fonts = page.get_fonts()
+        has_sutonny = any("sutonny" in f[3].lower() or "mj" in f[3].lower() for f in fonts)
+        has_bengali_unicode = any(0x0980 <= ord(ch) <= 0x09FF for ch in text)
+        has_pua = any(0xE000 <= ord(ch) <= 0xF8FF for ch in text)
 
-        for page in self.doc:
-            text = page.get_text().strip()
-            fonts = page.get_fonts()
-            has_sutonny = any("sutonny" in f[3].lower() or "mj" in f[3].lower() for f in fonts)
-            has_bengali_unicode = any(0x0980 <= ord(ch) <= 0x09FF for ch in text)
-
-            if has_sutonny:
-                bijoy_count += 1
-            elif has_bengali_unicode:
-                unicode_count += 1
-            elif len(text) < 30:
-                scanned_count += 1
-            else:
-                bijoy_count += 1
-
-        total = len(self.doc)
-        if bijoy_count >= total // 2:
+        # Detect obfuscated / truncated CMap fonts (e.g. subset NikoshBAN mapping to PUA or ASCII symbols)
+        if has_pua:
+            return "SCANNED"
+        if has_sutonny:
             return "BORN_DIGITAL_BIJOY"
-        elif unicode_count >= total // 2:
+        if has_bengali_unicode:
+            return "BORN_DIGITAL_UNICODE"
+        if len(text) < 30:
+            return "SCANNED"
+
+        # If text has no Bengali Unicode characters and no Sutonny font, font CMap is unmapped
+        bangla_chars = sum(1 for ch in text if 0x0980 <= ord(ch) <= 0x09FF)
+        if bangla_chars == 0 and not has_sutonny:
+            return "SCANNED"
+
+        return "BORN_DIGITAL_BIJOY"
+
+    def inspect_pdf(self):
+        """Classify overall PDF as BORN_DIGITAL_BIJOY, BORN_DIGITAL_UNICODE, or SCANNED."""
+        counts = {"BORN_DIGITAL_BIJOY": 0, "BORN_DIGITAL_UNICODE": 0, "SCANNED": 0}
+        for page in self.doc:
+            ctype = self.classify_page(page)
+            counts[ctype] += 1
+
+        total = max(1, len(self.doc))
+        if counts["SCANNED"] > total // 2:
+            return "SCANNED"
+        elif counts["BORN_DIGITAL_BIJOY"] >= total // 2:
+            return "BORN_DIGITAL_BIJOY"
+        elif counts["BORN_DIGITAL_UNICODE"] >= total // 2:
             return "BORN_DIGITAL_UNICODE"
         else:
-            return "SCANNED"
+            return "SCANNED" if counts["SCANNED"] > 0 else "BORN_DIGITAL_BIJOY"
 
     def extract_and_convert_page(self, page):
         """Extracts structured text lines and positioned spans from a page with highlight detection."""
@@ -648,7 +661,7 @@ class BanglaPDFProcessor:
         if not EASYOCR_AVAILABLE:
             raise RuntimeError("EasyOCR is not installed. Please install easyocr and torch for scanned PDFs.")
         if self.easyocr_reader is None:
-            self.easyocr_reader = easyocr.Reader(['bn'], gpu=False)
+            self.easyocr_reader = easyocr.Reader(['bn', 'en'], gpu=False)
 
         annots = [a for a in page.annots() if a.type[1] == 'Highlight']
         quad_rects = []
@@ -1583,8 +1596,9 @@ class BanglaPDFProcessor:
         all_pages_data = []
 
         for p_idx, page in enumerate(self.doc):
-            print(f"Processing page {p_idx + 1}/{len(self.doc)}...")
-            if pdf_type in ("BORN_DIGITAL_BIJOY", "BORN_DIGITAL_UNICODE"):
+            page_type = self.classify_page(page)
+            print(f"Processing page {p_idx + 1}/{len(self.doc)} [{page_type}]...")
+            if page_type in ("BORN_DIGITAL_BIJOY", "BORN_DIGITAL_UNICODE"):
                 page_lines, spans = self.extract_and_convert_page(page)
             else:
                 page_lines, spans = self.ocr_page(page)
